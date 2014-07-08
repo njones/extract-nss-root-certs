@@ -2,7 +2,7 @@ package main
 
 import (
 	"flag"
-	"./nss"
+	"github.com/njones/nss/nss"
 	"fmt"
 	"os"
 	"log"
