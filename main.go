@@ -68,11 +68,13 @@ func main() {
 
 	for _, blox := range f {
 		x509 := blox.X509
-		block := blox.Pem
 		label := blox.Label
+
+		block := &pem.Block{Type: "CERTIFICATE", Bytes: x509.Raw}
+
 		fmt.Println()
-		fmt.Println("# Issuer:", nss.Name(x509.Issuer))
-		fmt.Println("# Subject:", nss.Name(x509.Subject))
+		fmt.Println("# Issuer:", nss.Field(x509.Issuer))
+		fmt.Println("# Subject:", nss.Field(x509.Subject))
 		fmt.Println("# Label:", label)
 		fmt.Println("# Serial:", x509.SerialNumber.String())
 		fmt.Println("# MD5 Fingerprint:", nss.Fingerprint(crypto.MD5, x509.Raw))
@@ -85,7 +87,8 @@ func main() {
 		filenames := make(map[string]bool)
 		for _, x := range f {
 			label := x.Label
-			block := x.Pem
+			x509 := x.X509
+			block := &pem.Block{Type: "CERTIFICATE", Bytes: x509.Raw}
 
 			if strings.HasPrefix(label, "\"") {
 				label = label[1:]
@@ -94,7 +97,7 @@ func main() {
 				label = label[:len(label)-1]
 			}
 			// The label may contain hex-escaped, UTF-8 charactors.
-			label = nss.UnescapeLabel(label)
+			label = nss.DecodeHexEscapedString(label)
 			label = strings.Replace(label, " ", "_", -1)
 			label = strings.Replace(label, "/", "_", -1)
 
