@@ -39,7 +39,7 @@ import (
 // Block is the exported type from this lib. It has the label and the cert in Binary form
 type Block struct {
 	Label string
-	Cert *x509.Certificate
+	Cert  *x509.Certificate
 }
 
 type IgnoreList map[string]string
@@ -56,6 +56,7 @@ type attribute struct {
 	attrType string
 	value    []byte
 }
+
 // filterObjectsByClass returns a subset of in where each element has the given
 // class.
 func filterObjectsByClass(in []*object, class string) (out []*object) {
@@ -68,8 +69,8 @@ func filterObjectsByClass(in []*object, class string) (out []*object) {
 }
 
 func parseLicenseBlock(in *bufio.Scanner, ln int) (lineNo int, license, cvsId string) {
-	license += in.Text()+"\n"   // Add this line to the license string
-	
+	license += in.Text() + "\n" // Add this line to the license string
+
 	// Loop through the next lines until we get to an blank line
 	for in.Scan() {
 
@@ -84,8 +85,10 @@ func parseLicenseBlock(in *bufio.Scanner, ln int) (lineNo int, license, cvsId st
 		}
 
 		// If the line is blank then we can exit out of the license loop
-		if len(line) == 0 { break }
-		license += line+"\n" // Add this line to the license string.
+		if len(line) == 0 {
+			break
+		}
+		license += line + "\n" // Add this line to the license string.
 	}
 	return ln, license, cvsId
 }
@@ -93,15 +96,17 @@ func parseLicenseBlock(in *bufio.Scanner, ln int) (lineNo int, license, cvsId st
 func parseMultiLineOctal(in *bufio.Scanner, ln int) (lineNo int, value []byte) {
 	// Loop through the next lines (inner-loop 2)
 	for in.Scan() {
-		
+
 		// Advance the line count and grab the line
 		ln += 1
 		line := in.Text()
 
 		// If we've hit the end of the block then break out of (inner-loop 2) and go back to inner-loop 1
-		if line == "END" { break }
-		
-		// Split all of the octal encodings for the line out. 
+		if line == "END" {
+			break
+		}
+
+		// Split all of the octal encodings for the line out.
 		for _, octalStr := range strings.Split(line, `\`) {
 			if len(octalStr) == 0 {
 				continue
@@ -124,7 +129,7 @@ func parseMultiLineOctal(in *bufio.Scanner, ln int) (lineNo int, value []byte) {
 func parseCkaClassObject(in *bufio.Scanner, ln int, cka *object) (lineNo int, o *object) {
 	// Loop through the lines of the CKA_CLASS and add to the object
 	for in.Scan() {
-						
+
 		ln += 1
 		line := in.Text()
 
@@ -132,20 +137,20 @@ func parseCkaClassObject(in *bufio.Scanner, ln int, cka *object) (lineNo int, o 
 		if len(line) == 0 || line[0] == '#' {
 			break
 		}
-		
+
 		var value []byte
 		words := strings.Fields(line)
-		
+
 		if len(words) == 2 && words[1] == "MULTILINE_OCTAL" {
 			ln, value = parseMultiLineOctal(in, ln)
 		} else if len(words) < 3 {
-			log.Fatalf("Expected three or more values on line %d, but found %d", lineNo, len(words)) 
+			log.Fatalf("Expected three or more values on line %d, but found %d", lineNo, len(words))
 		} else {
 			lineNo += 1
 			value = []byte(strings.Join(words[2:], " "))
 		}
 
-		cka.attrs[words[0]] = attribute{ words[1], value }
+		cka.attrs[words[0]] = attribute{words[1], value}
 	}
 
 	return ln, cka
@@ -171,13 +176,13 @@ func ParseIgnoreList(file io.Reader) (ignoreList IgnoreList) {
 // included) and a set of Objects.
 func ParseInput(file io.Reader) (license, cvsId string, objects []*object) {
 	in := bufio.NewScanner(file)
-	
+
 	var lineNo int
 	var hasLicense bool
 	var hasBeginData bool
 
 	for in.Scan() {
-		
+
 		lineNo += 1
 		line := in.Text()
 
@@ -194,7 +199,7 @@ func ParseInput(file io.Reader) (license, cvsId string, objects []*object) {
 
 			// Now finish the scanning of the document here (inner-loop 1). We shouldn't need to go back to the outer loop
 			for in.Scan() {
-		
+
 				// Advance the line count and grab the line
 				lineNo += 1
 				line := in.Text()
@@ -203,10 +208,10 @@ func ParseInput(file io.Reader) (license, cvsId string, objects []*object) {
 				if len(line) == 0 || line[0] == '#' {
 					continue
 				}
-				
+
 				// See what words are on this line
 				words := strings.Fields(line)
-			
+
 				// CKA_CLASS are the magic words to set up an object, so lets start a new object
 				if words[0] == "CKA_CLASS" {
 
@@ -214,15 +219,15 @@ func ParseInput(file io.Reader) (license, cvsId string, objects []*object) {
 					ckaClass.startingLine = lineNo
 					ckaClass.attrs = map[string]attribute{
 						words[0]: attribute{
-							words[1], 
+							words[1],
 							[]byte(strings.Join(words[2:], " ")),
 						},
 					}
-					
+
 					lineNo, ckaClass = parseCkaClassObject(in, lineNo, ckaClass)
 					objects = append(objects, ckaClass)
 				}
-			}	
+			}
 		}
 	}
 
@@ -373,7 +378,7 @@ func DecodeHexEscapedString(escaped string) string {
 
 	// Loop through the string and split on `\x`
 	fn := func(data []byte, atEOF bool) (advance int, token []byte, err error) {
-		
+
 		// If you find the string `\x` then we have a hex character
 		if string(data[0:1]) == `\x` {
 
@@ -386,10 +391,10 @@ func DecodeHexEscapedString(escaped string) string {
 				// We have an error, so return the error, and advance the token by one.
 				return 1, []byte{data[0]}, err
 			}
-			
+
 			// Take the number that was converted from a string, and convert it to a byte.
 			token = []byte{byte(tb)}
-			
+
 			// Advance the scanner by 4 bytes, then return the actual single byte generated from the hex number
 			return advance, token, nil
 		}

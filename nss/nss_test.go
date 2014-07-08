@@ -1,23 +1,23 @@
 package nss
 
 import (
-	"testing"
 	"crypto"
 	_ "crypto/md5"
-//	"crypto/sha1"
+	"testing"
+	//	"crypto/sha1"
+	"bufio"
 	_ "crypto/sha256"
 	"encoding/hex"
-	"bufio"
 	"strings"
 )
 
-type fgrpnt struct{
-	hashFn  crypto.Hash
-	data     string
-	expect   string
+type fgrpnt struct {
+	hashFn crypto.Hash
+	data   string
+	expect string
 }
 
-type hexEsc struct{
+type hexEsc struct {
 	hexEncde string
 	expect   string
 }
@@ -85,14 +85,14 @@ END`
 )
 
 type nssObj struct {
-	key string
-	attr string
+	key   string
+	attr  string
 	value string
 }
 
 func TestParseCkaClassObject(t *testing.T) {
-	var objects []*object // the return data
-	l := 1        // line
+	var objects []*object                               // the return data
+	l := 1                                              // line
 	s := bufio.NewScanner(strings.NewReader(nssObject)) // scanner
 
 	for s.Scan() {
@@ -109,11 +109,11 @@ func TestParseCkaClassObject(t *testing.T) {
 			o.startingLine = l
 			o.attrs = map[string]attribute{
 				words[0]: attribute{
-					words[1], 
+					words[1],
 					[]byte(strings.Join(words[2:], " ")),
 				},
 			}
-			
+
 			l, o = parseCkaClassObject(s, l, o)
 			objects = append(objects, o)
 
@@ -170,8 +170,8 @@ func TestParseCkaClassObject(t *testing.T) {
 }
 
 func TestParseMultiLineOctal(t *testing.T) {
-	var b []byte // the return data
-	l := 1        // line
+	var b []byte                                                // the return data
+	l := 1                                                      // line
 	s := bufio.NewScanner(strings.NewReader(nssMultiLineOctal)) // scanner
 
 	l, b = parseMultiLineOctal(s, l)
@@ -185,8 +185,8 @@ func TestParseMultiLineOctal(t *testing.T) {
 }
 
 func TestParseLicenseBlock(t *testing.T) {
-	var license, cvsId string // The return data
-	l := 1        // line
+	var license, cvsId string                            // The return data
+	l := 1                                               // line
 	s := bufio.NewScanner(strings.NewReader(nssLicense)) // scanner
 
 	for s.Scan() {

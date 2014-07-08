@@ -22,16 +22,16 @@
 package main
 
 import (
-	"flag"
-	"fmt"
-	"os"
-	"log"
 	"crypto"
 	"encoding/pem"
-	"strings"
-	"strconv"
+	"flag"
+	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
+	"os"
+	"strconv"
+	"strings"
 
 	"github.com/njones/nss/nss"
 )
@@ -83,7 +83,7 @@ func main() {
 	} else {
 		nssBlocks = nss.TrustedCertificates(objects, ignoreList)
 	}
-	
+
 	// Set the display to default to outputing to a screen. But if -quiet is used, then discard
 	display = os.Stdout
 	if *quietFlg {
@@ -99,9 +99,9 @@ func main() {
 
 	filenames := make(map[string]bool)
 	for _, nssBlock := range nssBlocks {
-		
+
 		label := nssBlock.Label
-		x509  := nssBlock.Cert
+		x509 := nssBlock.Cert
 		block := &pem.Block{Type: "CERTIFICATE", Bytes: x509.Raw}
 
 		// If we are going to output to files then do all of the label stuff
