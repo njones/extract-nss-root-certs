@@ -6,6 +6,11 @@ import (
 	"fmt"
 	"os"
 	"log"
+
+	"crypto"
+	"encoding/pem"
+	"strings"
+	"strconv"
 )
 
 var (
@@ -26,14 +31,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	ignoreList := make(map[string]string)
+	il := make(map[string]string)
+
+	//ignoreList := make(map[string]string)
 	if *ignoreListFilename != "" {
 		ignoreListFile, err := os.Open(*ignoreListFilename)
 		if err != nil {
 			log.Fatalf("Failed to open ignore-list file: %s", err)
 		}
-		nss.ParseIgnoreList(ignoreListFile)
-		ignoreListFile.Close()
+		il = nss.ParseIgnoreList(ignoreListFile)
+		defer ignoreListFile.Close()
 	}
 
 	inFile, err := os.Open(inFilename)
@@ -42,7 +49,7 @@ func main() {
 	}
 
 	license, cvsId, objects := nss.ParseInput(inFile)
-	inFile.Close()
+	defer inFile.Close()
 
 	if !*toFiles {
 		os.Stdout.WriteString(license)
@@ -51,8 +58,64 @@ func main() {
 		}
 	}
 
-	nss.IgnoreList = ignoreList
-	nss.ToFiles = toFiles
-	nss.IncludedUntrustedFlag = includedUntrustedFlag
-	nss.OutputTrustedCerts(os.Stdout, objects)
+	var f []nss.Block
+
+	if *includedUntrustedFlag {
+		f = nss.AllCertificates(objects, il)
+	} else {
+		f = nss.TrustedCertificates(objects, il)
+	}
+
+	for _, blox := range f {
+		x509 := blox.X509
+		block := blox.Pem
+		label := blox.Label
+		fmt.Println()
+		fmt.Println("# Issuer:", nss.Name(x509.Issuer))
+		fmt.Println("# Subject:", nss.Name(x509.Subject))
+		fmt.Println("# Label:", label)
+		fmt.Println("# Serial:", x509.SerialNumber.String())
+		fmt.Println("# MD5 Fingerprint:", nss.Fingerprint(crypto.MD5, x509.Raw))
+		fmt.Println("# SHA1 Fingerprint:", nss.Fingerprint(crypto.SHA1, x509.Raw))
+		fmt.Println("# SHA256 Fingerprint:", nss.Fingerprint(crypto.SHA256, x509.Raw))
+		pem.Encode(os.Stdout, block)
+	}
+
+	if *toFiles {
+		filenames := make(map[string]bool)
+		for _, x := range f {
+			label := x.Label
+			block := x.Pem
+
+			if strings.HasPrefix(label, "\"") {
+				label = label[1:]
+			}
+			if strings.HasSuffix(label, "\"") {
+				label = label[:len(label)-1]
+			}
+			// The label may contain hex-escaped, UTF-8 charactors.
+			label = nss.UnescapeLabel(label)
+			label = strings.Replace(label, " ", "_", -1)
+			label = strings.Replace(label, "/", "_", -1)
+
+			filename := label
+			for i := 2; ; i++ {
+				if _, ok := filenames[filename]; !ok {
+					break
+				}
+
+				filename = label + "-" + strconv.Itoa(i)
+			}
+			filenames[filename] = true
+
+			file, err := os.Create(filename + ".pem")
+			if err != nil {
+				log.Fatalf("Failed to create output file: %s\n", err)
+			}
+			pem.Encode(file, block)
+			file.Close()
+			//out.WriteString(filename + ".pem\n")
+			continue
+		}
+	}
 }

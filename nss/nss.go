@@ -33,7 +33,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
 	"strconv"
 	"strings"
 )
@@ -54,106 +53,156 @@ var (
 	// IgnoreList maps from CKA_LABEL values (from the upstream roots file)
 	// to an optional comment which is displayed when skipping matching
 	// certificates.
-
-	IgnoreList map[string]string
 )
-
-var IncludedUntrustedFlag *bool
-var ToFiles *bool
 
 
 // parseIgnoreList parses the ignore-list file into IgnoreList
-func ParseIgnoreList(IgnoreListFile io.Reader) {
+func ParseIgnoreList(IgnoreListFile io.Reader) (il map[string]string) {
+	if il == nil {
+		il = make(map[string]string)
+	}
 	in := bufio.NewScanner(IgnoreListFile)
 
 	for in.Scan() {
 		line := in.Text()
 		if split := strings.SplitN(line, "#", 2); len(split) == 2 {
 			// this line has an additional comment
-			IgnoreList[strings.TrimSpace(split[0])] = strings.TrimSpace(split[1])
+			il[strings.TrimSpace(split[0])] = strings.TrimSpace(split[1])
 		} else {
-			IgnoreList[line] = ""
+			il[line] = ""
 		}
 	}
+	return
 }
 
 // parseInput parses a certdata.txt file into it's license blob, the CVS id (if
 // included) and a set of Objects.
 func ParseInput(inFile io.Reader) (license, cvsId string, objects []*Object) {
 	in := bufio.NewScanner(inFile)
+	
 	var lineNo int
-
-	// Collect the license block
-	var collectLicense bool
+	var hasLicense bool
+	var hasBeginData bool
 	var currentObject *Object
-	var beginData bool
 
 	for in.Scan() {
-		line := in.Text()
+		
 		lineNo += 1
+		line := in.Text()
+
+		// Collect the license block
+		// Loop until we get the line "This Source Code" ...
 		if strings.Contains(line, "This Source Code") {
-			collectLicense = true
-			license += line
-			continue
-		}
-		if collectLicense && strings.Contains(line, "# ") {
-			license += line
-			continue
-		}
-		if collectLicense && len(line) == 0 {
-			license += line
-			collectLicense = false
-			continue
-		}
+			hasLicense = true // We have found a license, so set this check to true.
+			license += line+"\n"   // Add this line to the license string
+			
+			// Loop through the next lines until we get to an blank line
+			for in.Scan() {
 
-		if len(line) == 0 || line[0] == '#' {
-			continue
-		}
+				// Advance the line count and grab the line
+				lineNo += 1
+				line := in.Text()
 
-		if strings.HasPrefix(line, "CVS_ID ") {
-			cvsId = line[7:]
-			continue
-		}
+				// Check to see if there is a CVS_ID line within the license
+				if strings.HasPrefix(line, "CVS_ID ") {
+					cvsId = line[7:]
+					continue
+				}
 
-		if line == "BEGINDATA" {
-			beginData = true
-			continue
-		}
-
-		var value []byte
-		words := strings.Fields(line)
-
-		if len(words) == 2 && words[1] == "MULTILINE_OCTAL" {
-			value = readMultilineOctal(in, &lineNo)
-		} else if len(words) < 3 {
-			log.Fatalf("Expected three or more values on line %d, but found %d", lineNo, len(words))
-		} else {
-			value = []byte(strings.Join(words[2:], " "))
-		}
-
-		if words[0] == "CKA_CLASS" {
-			// Start of a new object.
-			if currentObject != nil {
-				objects = append(objects, currentObject)
+				// If the line is blank then we can exit out of the license loop
+				if len(line) == 0 { break }
+				license += line+"\n" // Add this line to the license string.
 			}
-			currentObject = new(Object)
-			currentObject.attrs = make(map[string]Attribute)
-			currentObject.startingLine = lineNo
+			continue // After we get the license, we can just skip to the next line (in the outer most loop)
 		}
-		if currentObject == nil {
-			log.Fatalf("Found attribute on line %d which appears to be outside of an object", lineNo)
-		}
-		currentObject.attrs[words[0]] = Attribute{
-			attrType: words[1],
-			value:    value,
+
+		// Loop until we get to the line BEGINDATA
+		if line == "BEGINDATA" {
+			hasBeginData = true
+
+			// Now finish the scanning of the document here (inner-loop 1). We shouldn't need to go back to the outer loop
+			for in.Scan() {
+		
+				// Advance the line count and grab the line
+				lineNo += 1
+				line := in.Text()
+
+				// Skip all of the comments
+				if len(line) == 0 || line[0] == '#' {
+					continue
+				}
+				
+				var value []byte
+				words := strings.Fields(line)
+				
+				// If we have the words Mutli-Line, then the next block of lines needs
+				// to be converted from encoded octals to binary
+				if len(words) == 2 && words[1] == "MULTILINE_OCTAL" {
+					
+					// Loop through the next lines (inner-loop 2)
+					for in.Scan() {
+						
+						// Advance the line count and grab the line
+						lineNo += 1
+						line := in.Text()
+
+						// If we've hit the end of the block then break out of (inner-loop 2) and go back to inner-loop 1
+						if line == "END" { break }
+						
+						// Split all of the octal encodings for the line out. 
+						for _, octalStr := range strings.Split(line, `\`) {
+							if len(octalStr) == 0 {
+								continue
+							}
+
+							// Parse the string value to a int8 (byte) value
+							v, err := strconv.ParseUint(octalStr, 8, 8)
+							if err != nil {
+								log.Fatalf("error converting octal string '%s' on line %d", octalStr, lineNo)
+							}
+
+							// Append all of the bytes
+							value = append(value, byte(v))
+						}
+					}
+
+				} else if len(words) < 3 {
+					log.Fatalf("Expected three or more values on line %d, but found %d", lineNo, len(words))
+				} else {
+					value = []byte(strings.Join(words[2:], " "))
+				}
+
+				if words[0] == "CKA_CLASS" {
+					
+					// Save the old object only after we have started a new object
+					if currentObject != nil {
+						objects = append(objects, currentObject)
+					}
+
+					// Start of a new object.
+					currentObject = new(Object)
+					currentObject.attrs = make(map[string]Attribute)
+					currentObject.startingLine = lineNo
+				}
+
+				if currentObject == nil {
+					log.Fatalf("Found attribute on line %d which appears to be outside of an object", lineNo)
+				}
+
+				currentObject.attrs[words[0]] = Attribute{
+					attrType: words[1],
+					value:    value,
+				}
+			}
+			continue
 		}
 	}
 
-	if len(license) == 0 {
+	if !hasLicense {
 		log.Fatalf("Read whole input and failed to find beginning of license")
 	}
 
-	if !beginData {
+	if !hasBeginData {
 		log.Fatalf("Read whole input and failed to find BEGINDATA")
 	}
 
@@ -164,12 +213,25 @@ func ParseInput(inFile io.Reader) (license, cvsId string, objects []*Object) {
 	return
 }
 
+type Block struct {
+	Label string
+	Pem *pem.Block
+	X509 *x509.Certificate
+}
+
+func TrustedCertificates(objects []*Object, ignoreList map[string]string) []Block {
+	return certs(objects, ignoreList, false)
+}
+
+func AllCertificates(objects []*Object, ignoreList map[string]string) []Block {
+	return certs(objects, ignoreList, true)
+}
+
 // outputTrustedCerts writes a series of PEM encoded certificates to out by
 // finding certificates and their trust records in objects.
-func OutputTrustedCerts(out *os.File, objects []*Object) {
+func certs(objects []*Object, ignoreList map[string]string, includeUntrusted bool) (blocks []Block) {
 	certs := filterObjectsByClass(objects, "CKO_CERTIFICATE")
 	trusts := filterObjectsByClass(objects, "CKO_NSS_TRUST")
-	filenames := make(map[string]bool)
 
 	for _, cert := range certs {
 		derBytes := cert.attrs["CKA_VALUE"].value
@@ -178,7 +240,7 @@ func OutputTrustedCerts(out *os.File, objects []*Object) {
 		digest := hash.Sum(nil)
 
 		label := string(cert.attrs["CKA_LABEL"].value)
-		if comment, present := IgnoreList[strings.Trim(label, "\"")]; present {
+		if comment, present := ignoreList[strings.Trim(label, "\"")]; present {
 			var sep string
 			if len(comment) > 0 {
 				sep = ": "
@@ -233,63 +295,20 @@ func OutputTrustedCerts(out *os.File, objects []*Object) {
 			log.Fatalf("Unknown trust value '%s' found for trust record starting on line %d", trustType, trust.startingLine)
 		}
 
-		if !trusted && !*IncludedUntrustedFlag {
+		if !trusted && !includeUntrusted {
 			continue
 		}
 
 		block := &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}
-
-		if *ToFiles {
-			if strings.HasPrefix(label, "\"") {
-				label = label[1:]
-			}
-			if strings.HasSuffix(label, "\"") {
-				label = label[:len(label)-1]
-			}
-			// The label may contain hex-escaped, UTF-8 charactors.
-			label = unescapeLabel(label)
-			label = strings.Replace(label, " ", "_", -1)
-			label = strings.Replace(label, "/", "_", -1)
-
-			filename := label
-			for i := 2; ; i++ {
-				if _, ok := filenames[filename]; !ok {
-					break
-				}
-
-				filename = label + "-" + strconv.Itoa(i)
-			}
-			filenames[filename] = true
-
-			file, err := os.Create(filename + ".pem")
-			if err != nil {
-				log.Fatalf("Failed to create output file: %s\n", err)
-			}
-			pem.Encode(file, block)
-			file.Close()
-			out.WriteString(filename + ".pem\n")
-			continue
-		}
-
-		out.WriteString("\n")
-		if !trusted {
-			out.WriteString("# NOT TRUSTED FOR SSL\n")
-		}
-
-		out.WriteString("# Issuer: " + nameToString(x509.Issuer) + "\n")
-		out.WriteString("# Subject: " + nameToString(x509.Subject) + "\n")
-		out.WriteString("# Label: " + label + "\n")
-		out.WriteString("# Serial: " + x509.SerialNumber.String() + "\n")
-		out.WriteString("# MD5 Fingerprint: " + fingerprintString(crypto.MD5, x509.Raw) + "\n")
-		out.WriteString("# SHA1 Fingerprint: " + fingerprintString(crypto.SHA1, x509.Raw) + "\n")
-		out.WriteString("# SHA256 Fingerprint: " + fingerprintString(crypto.SHA256, x509.Raw) + "\n")
-		pem.Encode(out, block)
+		blocks = append(blocks, Block{label, block, x509})
 	}
+
+	return
 }
 
 // nameToString converts name into a string representation containing the
 // CommonName, Organization and OrganizationalUnit.
-func nameToString(name pkix.Name) string {
+func Name(name pkix.Name) string {
 	ret := ""
 	if len(name.CommonName) > 0 {
 		ret += "CN=" + name.CommonName
@@ -312,46 +331,7 @@ func nameToString(name pkix.Name) string {
 	return ret
 }
 
-// filterObjectsByClass returns a subset of in where each element has the given
-// class.
-func filterObjectsByClass(in []*Object, class string) (out []*Object) {
-	for _, object := range in {
-		if string(object.attrs["CKA_CLASS"].value) == class {
-			out = append(out, object)
-		}
-	}
-	return
-}
-
-// readMultilineOctal converts a series of lines of octal values into a slice
-// of bytes.
-func readMultilineOctal(in *bufio.Scanner, lineNo *int) []byte {
-	
-	var value []byte
-
-	for in.Scan() {
-		*lineNo += 1
-		line := in.Text()
-		if line == "END" {
-			return value
-		}
-
-		for _, octalStr := range strings.Split(line, "\\") {
-			if len(octalStr) == 0 {
-				continue
-			}
-			v, err := strconv.ParseUint(octalStr, 8, 8)
-			if err != nil {
-				log.Printf("error converting octal string '%s' on line %d", octalStr, *lineNo)
-				return nil
-			}
-			value = append(value, byte(v))
-		}
-	}
-	return nil
-}
-
-func fingerprintString(hashFunc crypto.Hash, data []byte) string {
+func Fingerprint(hashFunc crypto.Hash, data []byte) string {
 	hash := hashFunc.New()
 	hash.Write(data)
 	digest := hash.Sum(nil)
@@ -361,7 +341,7 @@ func fingerprintString(hashFunc crypto.Hash, data []byte) string {
 }
 
 // unescapeLabel unescapes "\xab" style hex-escapes.
-func unescapeLabel(escaped string) string {
+func UnescapeLabel(escaped string) string {
 
 	// The variable that will hold the bytes of the output string
 	var b []byte
@@ -404,4 +384,15 @@ func unescapeLabel(escaped string) string {
 
 	// Convert all of the actual bytes to a string.
 	return string(b)
+}
+
+// filterObjectsByClass returns a subset of in where each element has the given
+// class.
+func filterObjectsByClass(in []*Object, class string) (out []*Object) {
+	for _, object := range in {
+		if string(object.attrs["CKA_CLASS"].value) == class {
+			out = append(out, object)
+		}
+	}
+	return
 }
