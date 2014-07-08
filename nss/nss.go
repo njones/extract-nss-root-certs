@@ -75,6 +75,61 @@ func ParseIgnoreList(IgnoreListFile io.Reader) (il map[string]string) {
 	return
 }
 
+func ParseLicenseBlock(in *bufio.Scanner, ln int) (lineNo int, license, cvsId string) {
+
+	license += in.Text()+"\n"   // Add this line to the license string
+	
+	// Loop through the next lines until we get to an blank line
+	for in.Scan() {
+
+		// Advance the line count and grab the line
+		ln += 1
+		line := in.Text()
+
+		// Check to see if there is a CVS_ID line within the license
+		if strings.HasPrefix(line, "CVS_ID ") {
+			cvsId = line[7:]
+			continue
+		}
+
+		// If the line is blank then we can exit out of the license loop
+		if len(line) == 0 { break }
+		license += line+"\n" // Add this line to the license string.
+	}
+	return ln, license, cvsId
+}
+
+func ParseMultiLineOctal(in *bufio.Scanner, ln int) (lineNo int, value []byte) {
+	// Loop through the next lines (inner-loop 2)
+	for in.Scan() {
+		
+		// Advance the line count and grab the line
+		ln += 1
+		line := in.Text()
+
+		// If we've hit the end of the block then break out of (inner-loop 2) and go back to inner-loop 1
+		if line == "END" { break }
+		
+		// Split all of the octal encodings for the line out. 
+		for _, octalStr := range strings.Split(line, `\`) {
+			if len(octalStr) == 0 {
+				continue
+			}
+
+			// Parse the string value to a int8 (byte) value
+			v, err := strconv.ParseUint(octalStr, 8, 8)
+			if err != nil {
+				log.Fatalf("error converting octal string '%s' on line %d", octalStr, lineNo)
+			}
+
+			// Append all of the bytes
+			value = append(value, byte(v))
+		}
+	}
+
+	return ln, value
+}
+
 // parseInput parses a certdata.txt file into it's license blob, the CVS id (if
 // included) and a set of Objects.
 func ParseInput(inFile io.Reader) (license, cvsId string, objects []*Object) {
@@ -94,26 +149,7 @@ func ParseInput(inFile io.Reader) (license, cvsId string, objects []*Object) {
 		// Loop until we get the line "This Source Code" ...
 		if strings.Contains(line, "This Source Code") {
 			hasLicense = true // We have found a license, so set this check to true.
-			license += line+"\n"   // Add this line to the license string
-			
-			// Loop through the next lines until we get to an blank line
-			for in.Scan() {
-
-				// Advance the line count and grab the line
-				lineNo += 1
-				line := in.Text()
-
-				// Check to see if there is a CVS_ID line within the license
-				if strings.HasPrefix(line, "CVS_ID ") {
-					cvsId = line[7:]
-					continue
-				}
-
-				// If the line is blank then we can exit out of the license loop
-				if len(line) == 0 { break }
-				license += line+"\n" // Add this line to the license string.
-			}
-			continue // After we get the license, we can just skip to the next line (in the outer most loop)
+			lineNo, license, cvsId = ParseLicenseBlock(in, lineNo)
 		}
 
 		// Loop until we get to the line BEGINDATA
@@ -138,34 +174,7 @@ func ParseInput(inFile io.Reader) (license, cvsId string, objects []*Object) {
 				// If we have the words Mutli-Line, then the next block of lines needs
 				// to be converted from encoded octals to binary
 				if len(words) == 2 && words[1] == "MULTILINE_OCTAL" {
-					
-					// Loop through the next lines (inner-loop 2)
-					for in.Scan() {
-						
-						// Advance the line count and grab the line
-						lineNo += 1
-						line := in.Text()
-
-						// If we've hit the end of the block then break out of (inner-loop 2) and go back to inner-loop 1
-						if line == "END" { break }
-						
-						// Split all of the octal encodings for the line out. 
-						for _, octalStr := range strings.Split(line, `\`) {
-							if len(octalStr) == 0 {
-								continue
-							}
-
-							// Parse the string value to a int8 (byte) value
-							v, err := strconv.ParseUint(octalStr, 8, 8)
-							if err != nil {
-								log.Fatalf("error converting octal string '%s' on line %d", octalStr, lineNo)
-							}
-
-							// Append all of the bytes
-							value = append(value, byte(v))
-						}
-					}
-
+					lineNo, value = ParseMultiLineOctal(in, lineNo)
 				} else if len(words) < 3 {
 					log.Fatalf("Expected three or more values on line %d, but found %d", lineNo, len(words))
 				} else {
