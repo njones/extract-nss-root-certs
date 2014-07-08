@@ -34,40 +34,34 @@ import (
 	"log"
 	"strconv"
 	"strings"
-	//"os"
 )
 
+// Block is the exported type from this lib. It has the label and the cert in Binary form
 type Block struct {
 	Label string
-	X509 *x509.Certificate
+	Cert *x509.Certificate
 }
 
-// Object represents a collection of attributes from the certdata.txt file
+type IgnoreList map[string]string
+
+// object represents a collection of attributes from the certdata.txt file
 // which are usually either certificates or trust records.
-type Object struct {
-	attrs        map[string]Attribute
+type object struct {
+	attrs        map[string]attribute
 	startingLine int // the line number that the object started on.
 }
 
-type Attribute struct {
+// attribute are the attributes for a CKA_CLASS object
+type attribute struct {
 	attrType string
 	value    []byte
 }
-
-// parseIgnoreList parses the ignore-list file into IgnoreList
-func ParseIgnoreList(IgnoreListFile io.Reader) (il map[string]string) {
-	if il == nil {
-		il = make(map[string]string)
-	}
-	in := bufio.NewScanner(IgnoreListFile)
-
-	for in.Scan() {
-		line := in.Text()
-		if split := strings.SplitN(line, "#", 2); len(split) == 2 {
-			// this line has an additional comment
-			il[strings.TrimSpace(split[0])] = strings.TrimSpace(split[1])
-		} else {
-			il[line] = ""
+// filterObjectsByClass returns a subset of in where each element has the given
+// class.
+func filterObjectsByClass(in []*object, class string) (out []*object) {
+	for _, o := range in {
+		if string(o.attrs["CKA_CLASS"].value) == class {
+			out = append(out, o)
 		}
 	}
 	return
@@ -127,7 +121,7 @@ func parseMultiLineOctal(in *bufio.Scanner, ln int) (lineNo int, value []byte) {
 	return ln, value
 }
 
-func parseCkaClassObject(in *bufio.Scanner, ln int, cka *Object) (lineNo int, o *Object) {
+func parseCkaClassObject(in *bufio.Scanner, ln int, cka *object) (lineNo int, o *object) {
 	// Loop through the lines of the CKA_CLASS and add to the object
 	for in.Scan() {
 						
@@ -151,16 +145,32 @@ func parseCkaClassObject(in *bufio.Scanner, ln int, cka *Object) (lineNo int, o 
 			value = []byte(strings.Join(words[2:], " "))
 		}
 
-		cka.attrs[words[0]] = Attribute{ words[1], value }
+		cka.attrs[words[0]] = attribute{ words[1], value }
 	}
 
 	return ln, cka
 }
 
+// ParseIgnoreList parses the ignore-list file into IgnoreList
+func ParseIgnoreList(file io.Reader) (ignoreList IgnoreList) {
+	in := bufio.NewScanner(file)
+
+	for in.Scan() {
+		line := in.Text()
+		if split := strings.SplitN(line, "#", 2); len(split) == 2 {
+			// this line has an additional comment
+			ignoreList[strings.TrimSpace(split[0])] = strings.TrimSpace(split[1])
+		} else {
+			ignoreList[line] = ""
+		}
+	}
+	return
+}
+
 // ParseInput parses a certdata.txt file into it's license blob, the CVS id (if
 // included) and a set of Objects.
-func ParseInput(inFile io.Reader) (license, cvsId string, objects []*Object) {
-	in := bufio.NewScanner(inFile)
+func ParseInput(file io.Reader) (license, cvsId string, objects []*object) {
+	in := bufio.NewScanner(file)
 	
 	var lineNo int
 	var hasLicense bool
@@ -200,10 +210,10 @@ func ParseInput(inFile io.Reader) (license, cvsId string, objects []*Object) {
 				// CKA_CLASS are the magic words to set up an object, so lets start a new object
 				if words[0] == "CKA_CLASS" {
 
-					ckaClass := new(Object)
+					ckaClass := new(object)
 					ckaClass.startingLine = lineNo
-					ckaClass.attrs = map[string]Attribute{
-						words[0]: Attribute{
+					ckaClass.attrs = map[string]attribute{
+						words[0]: attribute{
 							words[1], 
 							[]byte(strings.Join(words[2:], " ")),
 						},
@@ -227,7 +237,7 @@ func ParseInput(inFile io.Reader) (license, cvsId string, objects []*Object) {
 	return
 }
 
-func TrustedCertificates(objects []*Object, il ...map[string]string) []Block {
+func TrustedCertificates(objects []*object, il ...IgnoreList) []Block {
 	ignoreList := make(map[string]string)
 	if len(il) > 0 {
 		ignoreList = il[0]
@@ -235,7 +245,7 @@ func TrustedCertificates(objects []*Object, il ...map[string]string) []Block {
 	return certs(objects, ignoreList, false)
 }
 
-func AllCertificates(objects []*Object, il ...map[string]string) []Block {
+func AllCertificates(objects []*object, il ...IgnoreList) []Block {
 	ignoreList := make(map[string]string)
 	if len(il) > 0 {
 		ignoreList = il[0]
@@ -245,7 +255,7 @@ func AllCertificates(objects []*Object, il ...map[string]string) []Block {
 
 // outputTrustedCerts writes a series of PEM encoded certificates to out by
 // finding certificates and their trust records in objects.
-func certs(objects []*Object, ignoreList map[string]string, includeUntrusted bool) (blocks []Block) {
+func certs(objects []*object, ignoreList IgnoreList, includeUntrusted bool) (blocks []Block) {
 	certs := filterObjectsByClass(objects, "CKO_CERTIFICATE")
 	trusts := filterObjectsByClass(objects, "CKO_NSS_TRUST")
 
@@ -279,7 +289,7 @@ func certs(objects []*Object, ignoreList map[string]string, includeUntrusted boo
 		// currently uses). This needs some changes to the crypto/x509
 		// package to keep the raw names around.
 
-		var trust *Object
+		var trust *object
 		for _, possibleTrust := range trusts {
 			if bytes.Equal(digest, possibleTrust.attrs["CKA_CERT_SHA1_HASH"].value) {
 				trust = possibleTrust
@@ -399,15 +409,4 @@ func DecodeHexEscapedString(escaped string) string {
 
 	// Convert all of the actual bytes to a string.
 	return string(b)
-}
-
-// filterObjectsByClass returns a subset of in where each element has the given
-// class.
-func filterObjectsByClass(in []*Object, class string) (out []*Object) {
-	for _, object := range in {
-		if string(object.attrs["CKA_CLASS"].value) == class {
-			out = append(out, object)
-		}
-	}
-	return
 }

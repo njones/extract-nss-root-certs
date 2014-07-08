@@ -1,102 +1,123 @@
+// Copyright 2012 Google Inc. All Rights Reserved.
+// Author: agl@chromium.org (Adam Langley)
+// Author: njones@art-k-tec.com (Nika Jones)
+
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// This utility parses Mozilla's certdata.txt and extracts a list of trusted
+// certificates in PEM form.
+//
+// A current version of certdata.txt can be downloaded from:
+//   https://hg.mozilla.org/mozilla-central/raw-file/tip/security/nss/lib/ckfw/builtins/certdata.txt
 package main
 
 import (
 	"flag"
-	"github.com/njones/nss/nss"
 	"fmt"
 	"os"
 	"log"
-
 	"crypto"
 	"encoding/pem"
 	"strings"
 	"strconv"
+	"io"
+	"io/ioutil"
+
+	"github.com/njones/nss/nss"
 )
 
 var (
-	includedUntrustedFlag = flag.Bool("include-untrusted", false, "If set, untrusted certificates will also be included in the output")
-	toFiles               = flag.Bool("to-files", false, "If set, individual certificate files will be created in the current directory")
-	ignoreListFilename    = flag.String("ignore-list", "", "File containing a list of certificates to ignore")
+	quietFlg              = flag.Bool("quiet", false, "If set, there will be no output to the display")
+	toFilesFlg            = flag.Bool("to-files", false, "If set, individual certificate files will be created in the current directory")
+	includeUntrustedFlg   = flag.Bool("include-untrusted", false, "If set, untrusted certificates will also be included in the output")
+	ignoreListFilenameFlg = flag.String("ignore-list", "", "File containing a list of certificates to ignore")
 )
 
 func main() {
+	var display io.Writer
 
 	flag.Parse()
 
-	inFilename := "certdata.txt"
+	// Set up the ignore list
+	var ignoreList nss.IgnoreList
+	if *ignoreListFilenameFlg != "" {
+		ignoreListFile, err := os.Open(*ignoreListFilenameFlg)
+		if err != nil {
+			log.Fatalf("Failed to open ignore-list file: %s", err)
+		}
+		ignoreList = nss.ParseIgnoreList(ignoreListFile)
+		ignoreListFile.Close()
+	}
+
+	// Set up the name of the file we are going to read in
+	dataFilename := "certdata.txt"
 	if len(flag.Args()) == 1 {
-		inFilename = flag.Arg(0)
+		dataFilename = flag.Arg(0)
 	} else if len(flag.Args()) > 1 {
 		fmt.Printf("Usage: %s [<certdata.txt file>]\n", os.Args[0])
 		os.Exit(1)
 	}
 
-	il := make(map[string]string)
-
-	//ignoreList := make(map[string]string)
-	if *ignoreListFilename != "" {
-		ignoreListFile, err := os.Open(*ignoreListFilename)
-		if err != nil {
-			log.Fatalf("Failed to open ignore-list file: %s", err)
-		}
-		il = nss.ParseIgnoreList(ignoreListFile)
-		defer ignoreListFile.Close()
-	}
-
-	inFile, err := os.Open(inFilename)
+	file, err := os.Open(dataFilename)
 	if err != nil {
 		log.Fatalf("Failed to open input file: %s", err)
 	}
 
-	license, cvsId, objects := nss.ParseInput(inFile)
-	defer inFile.Close()
+	license, cvsId, objects := nss.ParseInput(file)
+	file.Close()
 
-	if !*toFiles {
-		os.Stdout.WriteString(license)
+	// Get back the certs from the parsed input
+	var nssBlocks []nss.Block
+	if *includeUntrustedFlg {
+		nssBlocks = nss.AllCertificates(objects, ignoreList)
+	} else {
+		nssBlocks = nss.TrustedCertificates(objects, ignoreList)
+	}
+	
+	// Set the display to default to outputing to a screen. But if -quiet is used, then discard
+	display = os.Stdout
+	if *quietFlg {
+		display = ioutil.Discard
+	}
+
+	if !*toFilesFlg {
+		fmt.Fprint(display, license)
 		if len(cvsId) > 0 {
-			os.Stdout.WriteString("CVS_ID " + cvsId + "\n")
+			fmt.Fprintln(display, "CVS_ID", cvsId)
 		}
 	}
 
-	var f []nss.Block
-
-	if *includedUntrustedFlag {
-		f = nss.AllCertificates(objects, il)
-	} else {
-		f = nss.TrustedCertificates(objects, il)
-	}
-
-	for _, blox := range f {
-		x509 := blox.X509
-		label := blox.Label
-
+	filenames := make(map[string]bool)
+	for _, nssBlock := range nssBlocks {
+		
+		label := nssBlock.Label
+		x509  := nssBlock.Cert
 		block := &pem.Block{Type: "CERTIFICATE", Bytes: x509.Raw}
 
-		fmt.Println()
-		fmt.Println("# Issuer:", nss.Field(x509.Issuer))
-		fmt.Println("# Subject:", nss.Field(x509.Subject))
-		fmt.Println("# Label:", label)
-		fmt.Println("# Serial:", x509.SerialNumber.String())
-		fmt.Println("# MD5 Fingerprint:", nss.Fingerprint(crypto.MD5, x509.Raw))
-		fmt.Println("# SHA1 Fingerprint:", nss.Fingerprint(crypto.SHA1, x509.Raw))
-		fmt.Println("# SHA256 Fingerprint:", nss.Fingerprint(crypto.SHA256, x509.Raw))
-		pem.Encode(os.Stdout, block)
-	}
-
-	if *toFiles {
-		filenames := make(map[string]bool)
-		for _, x := range f {
-			label := x.Label
-			x509 := x.X509
-			block := &pem.Block{Type: "CERTIFICATE", Bytes: x509.Raw}
-
+		// If we are going to output to files then do all of the label stuff
+		// This is going to be somewhat slower than if the "if/then" block is
+		// outside of the for loop (because it would be evaluated once) however
+		// i/o to disk will be a bigger bottle neck, so it's acceptable for
+		// code clarity. Or if not... feel free to refactor.
+		if *toFilesFlg {
 			if strings.HasPrefix(label, "\"") {
 				label = label[1:]
 			}
 			if strings.HasSuffix(label, "\"") {
 				label = label[:len(label)-1]
 			}
-			// The label may contain hex-escaped, UTF-8 charactors.
+
+			// The label may contain hex-escaped, UTF-8 characters.
 			label = nss.DecodeHexEscapedString(label)
 			label = strings.Replace(label, " ", "_", -1)
 			label = strings.Replace(label, "/", "_", -1)
@@ -115,10 +136,19 @@ func main() {
 			if err != nil {
 				log.Fatalf("Failed to create output file: %s\n", err)
 			}
+
 			pem.Encode(file, block)
 			file.Close()
-			//out.WriteString(filename + ".pem\n")
-			continue
 		}
+
+		fmt.Fprintln(display)
+		fmt.Fprintln(display, "# Issuer:", nss.Field(x509.Issuer))
+		fmt.Fprintln(display, "# Subject:", nss.Field(x509.Subject))
+		fmt.Fprintln(display, "# Label:", label)
+		fmt.Fprintln(display, "# Serial:", x509.SerialNumber.String())
+		fmt.Fprintln(display, "# MD5 Fingerprint:", nss.Fingerprint(crypto.MD5, x509.Raw))
+		fmt.Fprintln(display, "# SHA1 Fingerprint:", nss.Fingerprint(crypto.SHA1, x509.Raw))
+		fmt.Fprintln(display, "# SHA256 Fingerprint:", nss.Fingerprint(crypto.SHA256, x509.Raw))
+		pem.Encode(display, block)
 	}
 }
